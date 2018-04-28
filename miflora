@@ -1,0 +1,184 @@
+#!/bin/sh
+#
+# read and parse values from xiaomi miflora sensor 
+# relies on gatttool as back-end do the actual comms with the BLE device
+#
+# gatttool/miflora times out regularly
+# script exits on failure but doesn't do retries.
+#
+# edited from https://www.fanjoe.be/?p=2741 
+# more info from https://wiki.hackerspace.pl/projects:xiaomi-flora 
+
+SCRIPT_NAME="$0"
+
+# Print usage
+usage() {
+  echo -n "$SCRIPT_NAME [-param: value] -option ... 
+
+  gets and parses values from miflora
+  depends on gatttool to do the work
+
+ Parameters:
+  -M  		MAC address of MiFlora [mandatory]
+			e.g. -M AA:BB:CC:00:11:22
+			(use \"hcitool lescan\" to scan for devices)
+ Options:
+  -b		get battery level
+  -v		get firmware version
+  -t		get temperature in degrees Celsius
+  -m		get moisture level
+  -l		get light level
+  -f		get fertility level (conductivity?)
+  -h		Display this help and exit
+ 
+"
+}
+
+b=0
+t=0
+v=0
+m=0
+l=0
+f=0
+
+#parse arguments
+while getopts ":M:hbvtmlf" Option
+	do
+	case $Option in
+		M)  MAC=$OPTARG;;
+		b)  b="1";;
+		v)  v="1";;
+		t)  t="1";;
+		m)  m="1";;		
+		l)  l="1";;	
+		f)  f="1";;	
+		h)  usage;exit 0;;
+		\?) echo "unknown option: -$OPTARG" >&2; exit 1;;
+        :)  echo "Missing option argument for -$OPTARG" >&2; exit 1;;	
+#    f)filterspec=${OPTARG};;
+#    n)numlines=${OPTARG};;
+    esac
+	done
+shift "$((OPTIND - 1))"
+
+#[ "$#" -eq 0 ] ||  printf 'unknown arguments: - %s\n' "$@"; exit 1;
+
+
+
+# mac addr of sensor
+# use: hcitool lescan
+MAC="C4:7C:8D:62:B1:0D"
+ 
+
+ 
+# Le handle 0x0003 retourne le nom du periphérique bluetooth en ASCII
+#gatttool --device=$MAC --char-read -a 0x03
+#Characteristic value/descriptor: 46 6c 6f 77 65 72 20 63 61 72 65
+#Flower care
+ 
+# Le handle 0x0035 retourne : Temp (Int16) / Light (Int32) / Moisture (Int8) / Fertility (Int16)
+# Characteristic value/descriptor: bb 00 00 36 01 00 00 10 51 00 02 3c 00 fb 34 9b 
+# 								   TT TT ?? LI LI LI LI MO FE FE ?? ?? ?? ?? ?? ??
+#gatttool --device=$MAC --char-read -a 0x35
+#Characteristic value/descriptor: 8f 00 00 11 00 00 00 23 d9 01 02 3c 00 fb 34 9b 
+if [ $t == "1" ] || [ $m == "1" ] || [ $l == "1" ]; then
+	# On écrit A01F dans le handle 0x0033 pour activer le live data dans le handle 0x0035
+	# enable live data reading
+	ret=$(gatttool --device=$MAC --char-write-req -a 0x33 -n A01F 2>&1)
+	if [ $? -ne 0 ]; then
+		echo "GATTTOOL failed: $ret"
+		exit 
+	fi
+
+	hnd35=$(gatttool --device=$MAC --char-read -a 0x35)
+	if [ $? -ne 0 ]; then
+		echo "GATTTOOL failed: $hnd35"
+		exit 
+	fi
+fi
+ 
+# Le handle 0x0038 retourne : Battery (Int8) / Firmware version (5 bytes ASCII)
+#gatttool --device=$MAC --char-read -a 0x38
+#Characteristic value/descriptor: 63 27 33 2e 31 2e 38
+if [ $b == "1" ] || [ $v == "1" ]; then
+	hnd38=$(gatttool --device=$MAC --char-read -a 0x38 2>&1)
+	if [ $? -ne 0 ]; then
+		echo "GATTTOOL failed: $hnd38" >&2
+		exit 
+	fi
+fi
+ 
+# #devname
+# echo "getting name"
+# hnd03=$(gatttool --device=$MAC --char-read -a 0x03)
+# # parse name from response
+# name=$(echo "$hnd03" |cut -c34-65 | xxd -r -p)
+# echo "Dev at " $MAC " : " $name
+
+
+#battery status (only changes once every 24h)
+if [ "$b" == "1" ]; then
+	printf "Battery: %d %%\n" 0x${hnd38:33:2}
+fi
+
+# Affichage de la version du firmware
+if [ "$v" == "1" ]; then
+   printf "Version: \x${hnd38: -15 : 2}\x${hnd38: -12 : 2}\x${hnd38: -9:2}\x${hnd38: -6:2}\x${hnd38: -3:2}\n"
+fi
+   
+ 
+################
+#
+# temperature is returned in hex as first two bytes 
+# returned value is degrees Celsius*10 
+# negative values are returned as FF -0.1 °C / F6 FF pour -1.0 °C / 9C FF pour -10.0 °C
+# Real Température = -65536 + Température
+# 
+###########
+if [ "$t" == "1" ]; then
+
+	#grab first two bytes and convert hex to dec 
+	temperature=$(printf "%d" 0x${hnd35:36:2}${hnd35:33:2})
+	 
+	# Lorsque la température est négative, les 2 premiers bytes affichent :
+	# FF FF pour -0.1 °C / F6 FF pour -1.0 °C / 9C FF pour -10.0 °C
+	# Soit la formule : Température = -65536 + Température
+	# J'ai arbitrairement fixé la température pivot à 32768 soit 3276.8 °C !!!
+	 
+	## assumes if temp is very large then it must be negative
+	if [ $temperature -gt 32768 ]; then
+		temperature=$((-65536 + $temperature))
+	fi
+
+	# # insert decimal dot: all but last char + . + 1 char from end 
+	temperature=${temperature:0: -1}.${temperature: -1:1}
+
+	echo "Temperature $temperature °C"
+fi
+
+################
+#
+# Light intensity in lux next 4 bytes
+# 
+###########
+if [ "$l" == "1" ]; then
+	printf "Light intensity: %d lux\n" 0x${hnd35:51:2}${hnd35:48:2}${hnd35:45:2}${hnd35:42:2}
+fi
+
+################
+#
+# Moisture single byte in %?
+# 
+###########
+if [ "$m" == "1" ]; then
+	printf "Moisture: %d %%\n" 0x${hnd35:54:2}
+fi
+
+################
+#
+# Fertility (some kind of conductivity measure?)
+# 
+###########
+if [ "$f" == "1" ]; then
+	printf "Fertility: %d uS/cm\n" 0x${hnd35:60:2}${hnd35:57:2}
+fi
