@@ -1,0 +1,70 @@
+#!/usr/bin/gawk --exec
+
+BEGIN { 
+#CSV parser (sort of)
+FS=",";
+
+#hardcoded min/max for Chlorophytum - should get this from csv
+max_light_mmol = 2700+0;
+min_light_mmol = 1600+0;
+max_light_lux = 30000+0;
+min_light_lux = 500+0;
+max_temp = 32+0;
+min_temp = 10+0;
+max_env_humid = 85+0;
+min_env_humid = 30+0;
+max_soil_moist = 60+0;
+min_soil_moist = 15+0;
+max_soil_ec = 1300+0;
+min_soil_ec = 200+0;
+
+#message
+intro = "Hi, this is the Loreplant.\n\n";
+msg = "";
+}
+
+#skip first line for now
+NR == 1 { next;}
+#process rest
+# temp,soil_most,light,soil_ec
+
+#should be only 2 lines coming from the miflora script
+#NR >= 2 {
+NR == 2 {
+
+	temp=$1;
+	soil_moist=$2;
+	light=$3;
+	soil_ec=$4;
+	logmsg="\"t:"temp" m:"soil_moist" l:"light" f:"soil_ec"\""
+	system("logger -t "miflora" "logmsg);
+	
+
+#skip temp for now
+#	if (max_temp <= $1+0){ msg=msg+"too hot: "$1"C" }
+#	if (min_temp >= $1+0){ print "too cold: "$1"C" }
+
+	if (max_soil_moist <= $2+0){
+		msg=msg"Thanks for watering me, but my feet are really too wet right now.\n"; 
+	}
+	if (min_soil_moist >= $2+0){
+		msg=msg"What does a plant have to do to get a drink in this place?\n"; 
+	}	
+
+#skip light, needs averages or something
+
+	if (max_soil_ec <= $4+0){
+			msg=msg"Oh my god, belly full!!!\n"; 
+	}
+	if (min_soil_ec >= $4+0){
+			msg=msg"Give me eat!\n"; 	
+	}
+
+} 
+
+END {
+	if (msg){
+		msg="\""intro msg"\"";
+		system("/bin/sendhousebotmsg "msg);	
+	}
+}
