@@ -37,7 +37,7 @@ NR == 2 {
 	light=$3;
 	soil_ec=$4;
 	logmsg="\"t:"temp" m:"soil_moist" l:"light" f:"soil_ec"\""
-	system("logger -t "miflora" "logmsg);
+	system("/usr/bin/logger -t miflora "logmsg);
 	
 
 #skip temp for now
