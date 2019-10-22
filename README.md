@@ -20,3 +20,8 @@ Temperature 20.1 °C
 Light intensity: 76 lux     
 Moisture: 14 %     
 Fertility: 63 uS/cm     
+
+# alternatively
+
+> ./miflora -M AA:BB:CC:00:11:22 -c | ./mifloracheck
+(will call sendhousebotmsg in /bin)
