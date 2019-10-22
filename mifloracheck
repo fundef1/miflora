@@ -1,6 +1,26 @@
 #!/usr/bin/gawk --exec
 
+# command line arguments don't work with /bin/awk
+# use gawk instead (opkg install gawk)
+#!/usr/bin/awk -f
+
 BEGIN { 
+
+MSGCMD="echo"
+
+# read command line options
+# FIXME: add some checks 
+for(i = 1; i < ARGC; i++) {
+	if (ARGV[i] == "-msgcmd") {
+		ARGV[i]="";
+		i++;
+		MSGCMD=ARGV[i];
+		ARGV[i]="";
+		#setting ARGV to "" should prevent awk from trying to read it as a file
+	}
+} 
+
+
 #CSV parser (sort of)
 FS=",";
 
@@ -65,6 +85,6 @@ NR == 2 {
 END {
 	if (msg){
 		msg="\""intro msg"\"";
-		system("/bin/sendhousebotmsg "msg);	
+		system(MSGCMD" "msg);	
 	}
 }
