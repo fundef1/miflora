@@ -1,0 +1,10 @@
+#!/bin/sh
+URL="https://api.telegram.org/bot"
+CMD="/sendMessage"
+
+APIKEY="<YOURAPIKEYHERE>"
+CHATID="<YOURCHATIDHERE>"
+
+MSG=$1
+
+curl -s -X POST $URL$APIKEY$CMD -d chat_id=$CHATID -d text="$MSG"
