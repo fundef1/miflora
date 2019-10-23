@@ -1,5 +1,6 @@
 # miflora
 shell script to read Xiaomi MiFlora sensor using gatttool and ash (busybox) only
+(and gawk)
 tested on OpenWRT 
 
 
@@ -11,8 +12,8 @@ edited from https://www.fanjoe.be/?p=2741
 more info from https://wiki.hackerspace.pl/projects:xiaomi-flora 
 
 # usage
-(as root do)
-> ./miflora -bvtlmf -M AA:BB:CC:00:11:22
+(as root)
+> ./miflora -M AA:BB:CC:00:11:22 -bvm
 
 Battery: 92 %      
 Version: 2.7.0      
@@ -23,6 +24,6 @@ Fertility: 63 uS/cm
 
 # alternatively
 
-> ./miflora -M AA:BB:CC:00:11:22 -c | ./mifloracheck
+> ./miflora -M AA:BB:CC:00:11:22 -H 48 -c | ./mifloracheck -msgcmd /bin/sendtotelegram
 
-(will call sendhousebotmsg in /bin)
+(will call /bin/sendtotelegram if values are out of range)
