@@ -8,6 +8,7 @@
 #
 # edited from https://www.fanjoe.be/?p=2741 
 # more info from https://wiki.hackerspace.pl/projects:xiaomi-flora 
+# and https://github.com/vrachieru/xiaomi-flower-care-api
 
 SCRIPT_NAME="$0"
 
@@ -22,41 +23,77 @@ usage() {
   -M  		MAC address of MiFlora [mandatory]
 			e.g. -M AA:BB:CC:00:11:22
 			(use \"hcitool lescan\" to scan for devices)
+  -H		NUMBER max number of historic data records to read 
+			(for temperature,moisture,light,fertility)
+			without -H will read real-time data from MiFlora
+			
  Options:
   -b		get battery level
   -v		get firmware version
-  -t		get temperature in degrees Celsius
-  -m		get moisture level
-  -l		get light level
-  -f		get fertility level (conductivity?)
+  -m        get measurements
+
+  -c        CSV output with header
+			if omitted will print full text outpunt
+				temperature in degrees Celsius
+				moisture level
+				light level
+ 				fertility level (conductivity?)
+  -n        no header in CSV (e.g. for appending)
   
-  -c        CSV output of handle 0x0035 (tmlf)
+  -z		zap all historic data from MiFlora (TODO)
   
   -h		Display this help and exit
  
 "
 }
+# print functions just spit out globals set elsewhere
+print_csv_header(){
+	#headers match those from plantDB
+	echo "temp,soil_moist,light_lux,soil_ec"
+}
+print_csv_line(){
+	echo "$temperature,$moisture,$light,$fertility"
+}
+
+print_temperature(){
+	echo "Temperature $temperature °C"
+}
+print_light(){
+	echo "Light intensity: $light lux"
+}
+print_moisture(){
+	echo "Moisture: $moisture %"
+}
+print_fertility(){
+	echo "Fertility: $fertility uS/cm"
+}
+
+
+#init some vars just be safe
+
+HISTNUMBER=0
 
 b=0
-t=0
 v=0
-m=0
-l=0
-f=0
+p=0
 c=0
+z=0
+m=0
+n=0
 
 #parse arguments
-while getopts ":M:hbvtmlfc" Option
+while getopts ":M:H:hbvmnpcz" Option
 	do
 	case $Option in
 		M)  MAC=$OPTARG;;
+		H)  HISTNUMBER=$OPTARG;;
 		b)  b="1";;
 		v)  v="1";;
-		t)  t="1";;
-		m)  m="1";;		
-		l)  l="1";;	
-		f)  f="1";;	
 		c)  c="1";;
+		p)  p="1";;
+		m)  m="1";;
+		z)  z="1";;
+		n)  n="1";;
 		h)  usage;exit 0;;
 		\?) echo "unknown option: -$OPTARG" >&2; exit 1;;
         :)  echo "Missing option argument for -$OPTARG" >&2; exit 1;;	
@@ -67,19 +104,138 @@ while getopts ":M:hbvtmlfc" Option
 shift "$((OPTIND - 1))"
 
  
-# Le handle 0x0003 retourne le nom du periphérique bluetooth en ASCII
-#gatttool --device=$MAC --char-read -a 0x03
-#Characteristic value/descriptor: 46 6c 6f 77 65 72 20 63 61 72 65
-#Flower care
 
-# skip
+# 
+# write 0xA00000  to 0x3e and 
+# (immediately) read from 0x3c
+# 
+# gatttool --device=$MAC --char-write-req -a 0x3e -n A00000 &&
+# gatttool --device=$MAC --char-read -a 0x3c
+# 2a 00 bb 9f 76 14 08 00 a8 15 08 00 00 00 00 00
+# cc cc ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??
+
+
+if [ $HISTNUMBER -gt 0 ] && [ "$m" == "1" ]; 
+	then
+
+	ret=$(gatttool --device=$MAC --char-write-req -a 0x3e -n A00000 2>&1)
+	if [ $? -ne 0 ]; then
+		echo "GATTTOOL failed: $ret"
+		exit 
+	fi
+	
+	hnd3c=$(gatttool --device=$MAC --char-read -a 0x3c)
+	if [ $? -ne 0 ]; then
+		echo "GATTTOOL failed: $hnd3c"
+		exit 
+	fi
+	
+	#grab first two bytes and convert hex to dec 
+	histcount=$(printf "%d" 0x${hnd3c:36:2}${hnd3c:33:2})
+	
+	# prevent reading bogus data
+	if [ $histcount -lt $HISTNUMBER ]; then
+		HISTNUMBER=$histcount
+	fi
+	
+	if [ "$c" == "1" ] && [ "$n" == "0" ]; then
+		print_csv_header
+	fi
+
+	count=0
+	while [ $count -lt $HISTNUMBER ]
+	do
+
+		# Next we need to read each historical entry individually.
+		# To do so we need to calculate it's address, write it to the history control handle (0x3e) 
+		# and then read the entry from the history data handle (0x3c).
+		
+		#the address for each individual entry is computed by adding two bytes representing the entry index to 0xa1.
+		#Entry 0's address will be 0xa10000, entry 1's address 0xa10100, entry 16's address 0xa11000
+		
+		
+		#addr=$(printf "%02X" $count)
+		
+		ret=$(gatttool --device=$MAC --char-write-req -a 0x3e -n A1$(printf "%02X" $count)00 2>&1)
+		if [ $? -ne 0 ]; then
+			echo "GATTTOOL failed: $ret"
+			exit 
+		fi
+		hnd3c=$(gatttool --device=$MAC --char-read -a 0x3c)
+		if [ $? -ne 0 ]; then
+			echo "GATTTOOL failed: $hnd3c"
+			exit 
+		fi
+	
+		# format is differenty positioned from real-time data ;-/
+		# ab 5c 02 00 be 00 00 73 02 00 00 31 a0 02 00 00
+		# tt tt tt tt TT TT ?? LI LI LI ?? MO FE FE ?? ??
+		#								LI
+		# tt timestamp (seconds since device reboot)
+		# increments by 3600 , i.e. one measurement every hour
+		
+		#actual payload starts at pos 33
+		timestamp=$(printf "%d" 0x${hnd3c:42:2}${hnd3c:39:2}${hnd3c:36:2}${hnd3c:33:2})
+		
+		if [ "$c" == "0" ]; then
+			echo "# Timestamp: $timestamp"
+		fi
+		
+		#echo $timestamp
+		
+		#grab first next bytes and convert hex to dec 
+		temperature=$(printf "%d" 0x${hnd3c:48:2}${hnd3c:45:2})
+		
+		## assumes if temp is very large then it must be negative
+		if [ $temperature -gt 32768 ]; then
+			temperature=$((-65536 + $temperature))
+		fi
+	
+		# # insert decimal dot: all but last char + . + 1 char from end 
+		temperature=${temperature:0: -1}.${temperature: -1:1}
+		#echo $temperature
+		
+		# Light intensity in lux next 4 bytes
+		light=$(printf "%d" 0x${hnd3c:63:2}${hnd3c:60:2}${hnd3c:57:2}${hnd3c:54:2})
+		#echo $light
+	
+		# Moisture single byte in %?
+		moisture=$(printf "%d" 0x${hnd3c:66:2})
+		#echo $moisture
+	
+		# Fertility (some kind of conductivity measure?)
+		fertility=$(printf "%d" 0x${hnd3c:72:2}${hnd3c:69:2})
+		#echo $fertility
+		
+		
+		if [ "$c" == "1" ]; then
+			print_csv_line
+		fi
+
+		if [ "$c" == "0" ]; then
+			print_temperature
+			print_light
+			print_moisture
+			print_fertility
+		fi
+		
+  
+		#oh the joys of i++
+		count=$(($count+1))
+	done
+	
+	
+elif [ "$m" == "1" ];
+	then
+	# regular read of real-time data
+
  
-# Le handle 0x0035 retourne : Temp (Int16) / Light (Int32) / Moisture (Int8) / Fertility (Int16)
-# Characteristic value/descriptor: bb 00 00 36 01 00 00 10 51 00 02 3c 00 fb 34 9b 
-# 								   TT TT ?? LI LI LI LI MO FE FE ?? ?? ?? ?? ?? ??
-#gatttool --device=$MAC --char-read -a 0x35
-#Characteristic value/descriptor: 8f 00 00 11 00 00 00 23 d9 01 02 3c 00 fb 34 9b 
-if [ $t == "1" ] || [ $m == "1" ] || [ $l == "1" ] || [ $f == "1" ]  || [ $c == "1" ]; then
+	# Le handle 0x0035 retourne : Temp (Int16) / Light (Int32) / Moisture (Int8) / Fertility (Int16)
+	# Characteristic value/descriptor: bb 00 00 36 01 00 00 10 51 00 02 3c 00 fb 34 9b 
+	# 								   TT TT ?? LI LI LI LI MO FE FE ?? ?? ?? ?? ?? ??
+	#gatttool --device=$MAC --char-read -a 0x35
+	#Characteristic value/descriptor: 8f 00 00 11 00 00 00 23 d9 01 02 3c 00 fb 34 9b 
+
 	# On écrit A01F dans le handle 0x0033 pour activer le live data dans le handle 0x0035
 	# enable live data reading
 	ret=$(gatttool --device=$MAC --char-write-req -a 0x33 -n A01F 2>&1)
@@ -128,9 +284,41 @@ if [ $t == "1" ] || [ $m == "1" ] || [ $l == "1" ] || [ $f == "1" ]  || [ $c == 
 
 	# Fertility (some kind of conductivity measure?)
 	fertility=$(printf "%d" 0x${hnd35:60:2}${hnd35:57:2})
+	
+	if [ "$c" == "1" ] && [ "$n" == "0" ]; then
+		print_csv_header	 
+	fi
+	if [ "$c" == "1" ]; then
+		print_csv_line
+	fi
+	if [ "$c" == "0" ]; then
+		print_temperature
+		print_light
+		print_moisture
+		print_fertility
+	fi
 
 fi
+
+
+
  
+
+
+
+# Le handle 0x0003 retourne le nom du periphérique bluetooth en ASCII
+#gatttool --device=$MAC --char-read -a 0x03
+#Characteristic value/descriptor: 46 6c 6f 77 65 72 20 63 61 72 65
+#Flower care
+ 
+# #devname
+# echo "getting name"
+# hnd03=$(gatttool --device=$MAC --char-read -a 0x03)
+# # parse name from response
+# name=$(echo "$hnd03" |cut -c34-65 | xxd -r -p)
+# echo "Dev at " $MAC " : " $name
+
+
 # Le handle 0x0038 retourne : Battery (Int8) / Firmware version (5 bytes ASCII)
 #gatttool --device=$MAC --char-read -a 0x38
 #Characteristic value/descriptor: 63 27 33 2e 31 2e 38
@@ -141,14 +329,6 @@ if [ $b == "1" ] || [ $v == "1" ]; then
 		exit 
 	fi
 fi
- 
-# #devname
-# echo "getting name"
-# hnd03=$(gatttool --device=$MAC --char-read -a 0x03)
-# # parse name from response
-# name=$(echo "$hnd03" |cut -c34-65 | xxd -r -p)
-# echo "Dev at " $MAC " : " $name
-
 
 #battery status (only changes once every 24h)
 if [ "$b" == "1" ]; then
@@ -161,57 +341,3 @@ if [ "$v" == "1" ]; then
 fi
    
  
-################
-#
-# temperature is returned in hex as first two bytes 
-# returned value is degrees Celsius*10 
-# negative values are returned as FF -0.1 °C / F6 FF pour -1.0 °C / 9C FF pour -10.0 °C
-# Real Température = -65536 + Température
-# 
-###########
-if [ "$t" == "1" ]; then
-
-	echo "Temperature $temperature °C"
-fi
-
-
-##### printing stuff
-
-################
-#
-# Print Light intensity in lux
-# 
-###########
-if [ "$l" == "1" ]; then
-	echo "Light intensity: $light lux"
-fi
-
-################
-#
-# print Moisture in %?
-# 
-###########
-if [ "$m" == "1" ]; then
-	echo "Moisture: $moisture %"
-fi
-
-################
-#
-# print Fertility (some kind of conductivity measure?)
-# 
-###########
-if [ "$f" == "1" ]; then
-	echo "Fertility: $fertility uS/cm"
-fi
-
-################
-#
-# print CSV 
-# 
-###########
-
-if [ "$c" == "1" ]; then
-	echo "temp,soil_moist,light_lux,soil_ec"
-	echo "$temperature,$moisture,$light,$fertility"
-
-fi
