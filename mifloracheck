@@ -60,9 +60,12 @@ NR == 2 {
 	system("/usr/bin/logger -t miflora "logmsg);
 	
 
-#skip temp for now
-#	if (max_temp <= $1+0){ msg=msg+"too hot: "$1"C" }
-#	if (min_temp >= $1+0){ print "too cold: "$1"C" }
+	if (max_temp <= $1+0){ 
+		msg=msg+"Open the windows, it's too hot in here.\n" 
+	}
+	if (min_temp >= $1+0){ 
+		msg=msg+"I'm freezing. Come heat me up.\n" 
+	}
 
 	if (max_soil_moist <= $2+0){
 		msg=msg"Thanks for watering me, but my feet are really too wet right now.\n"; 
